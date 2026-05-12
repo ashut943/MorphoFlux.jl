@@ -1,4 +1,4 @@
-include(joinpath(@__DIR__, "..", "genome", "genome.jl"))
+include(joinpath(@__DIR__, "..", "genome-ae_nca", "genome.jl"))
 include(joinpath(@__DIR__, "target_prep.jl"))
 
 using CUDA, LinearAlgebra, Statistics, Plots

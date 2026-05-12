@@ -1,11 +1,9 @@
-# Emoji or png -> jld2 (+ rgb preview). Needs NeuralCellularAutomata already in Main.
+# Emoji or png -> jld2 (+ rgb preview). Needs NeuralCellularAutomata already in MaiNeuralCellularAutomata.
 using Downloads
 using FileIO: load
 using ImageIO
 using JLD2: jldsave
 using Random
-
-const N = NeuralCellularAutomata
 
 const NOTO_EMOJI_API_URL = "https://api.github.com/repos/googlefonts/noto-emoji/contents/png/128?ref=main"
 const NOTO_EMOJI_CACHE_DIR = "noto_emoji_pngs"
@@ -55,7 +53,7 @@ function make_random_emoji_target!(
     out_jld::String;
     target_size::Int,
     output_dir::String = "outputs",
-    run_id::String = N.run_timestamp(),
+    run_id::String = NeuralCellularAutomata.run_timestamp(),
     emoji = nothing,
     rng::AbstractRNG = Random.default_rng(),
 )
@@ -64,11 +62,11 @@ function make_random_emoji_target!(
     cp(src, joinpath(output_dir, "target_emoji_source.png"); force=true)
 
     img = load(src)
-    arr = N.image_to_nca_target(img, target_size, target_size)
+    arr = NeuralCellularAutomata.image_to_nca_target(img, target_size, target_size)
     jldsave(out_jld; target=arr)
 
     preview = joinpath(output_dir, "target_emoji_processed.png")
-    N.save_rgb_png(preview, N.to_rgb(arr); title="target")
+    NeuralCellularAutomata.save_rgb_png(preview, NeuralCellularAutomata.to_rgb(arr); title="target")
 
     @info isnothing(emoji) ? "random noto emoji -> $out_jld" : "emoji $emoji -> $out_jld"
     out_jld
@@ -79,11 +77,11 @@ function make_png_target!(out_jld::String, png_path::String; target_size::Int, o
     mkpath(output_dir)
     cp(png_path, joinpath(output_dir, "target_source.png"); force=true)
 
-    arr = N.image_to_nca_target(load(png_path), target_size, target_size)
+    arr = NeuralCellularAutomata.image_to_nca_target(load(png_path), target_size, target_size)
     jldsave(out_jld; target=arr)
 
     preview = joinpath(output_dir, "target_processed.png")
-    N.save_rgb_png(preview, N.to_rgb(arr); title="target")
+    NeuralCellularAutomata.save_rgb_png(preview, NeuralCellularAutomata.to_rgb(arr); title="target")
     @info "png $png_path -> $out_jld"
     out_jld
 end

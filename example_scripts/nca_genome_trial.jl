@@ -55,3 +55,5 @@ model, loss_log = main_genome(
     video_fire_rate=0.5f0,
     image_scale=8,
 )
+
+

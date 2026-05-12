@@ -1,0 +1,23 @@
+Base.@kwdef struct GenomeHParams
+    channel_n::Int           = 16
+    hidden_n::Int            = 128
+    fire_rate::Float32       = 0.5f0
+    target_size::Int         = 40
+    target_padding::Int      = 16
+    batch_size::Int          = 8
+    pool_size::Int           = 256
+    train_steps::Int         = 8000
+    min_steps::Int           = 64
+    max_steps::Int           = 96
+    lr::Float32              = 2f-3
+    lr_decay_step::Int       = 2000
+    lr_decay_factor::Float32 = 0.1f0
+    encoder_hidden_n::Int    = 256
+    hyper_hidden_n::Int      = 256
+    hyper_output_scale::Float32 = 0.01f0
+    kl_beta::Float32         = 1f-4
+    damage_n::Int            = 0
+    use_pattern_pool::Bool   = true
+    genome_k::Int            = 8    
+    n_targets::Int           = 4 
+end

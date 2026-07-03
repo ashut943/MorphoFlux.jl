@@ -6,6 +6,7 @@ function save_model(model::CAModel, hp::HParams, path::String)
         dense2_b = Array(model.dense2_b),
         channel_n = model.channel_n,
         fire_rate = model.fire_rate,
+        visible_channels = model.visible_channels,
         hparams  = hp,
     )
 end
@@ -20,6 +21,7 @@ function load_model(path::String)
         cu(d["dense2_b"]),
         d["channel_n"],
         d["fire_rate"],
+        get(d, "visible_channels", 4),
     )
     return model, hp
 end

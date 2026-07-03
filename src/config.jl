@@ -16,6 +16,40 @@ Base.@kwdef struct HParams
     lr_decay_factor::Float32 = 0.1f0
     damage_n::Int = 0
     use_pattern_pool::Bool = false
+    # subset of: :id, :sobel_x, :sobel_y, :avg, :laplacian
+    filters::Vector{Symbol} = [:id, :sobel_x, :sobel_y]
+    # 1 = intensity only, 2 = gray+alpha (life on ch2), 4 = RGBA (life on ch4)
+    visible_channels::Int = 4
+
+    function HParams(channel_n, hidden_n, fire_rate, target_size, target_padding,
+                     batch_size, pool_size, train_steps, min_steps, max_steps,
+                     lr, lr_decay_step, lr_decay_factor, damage_n, use_pattern_pool,
+                     filters, visible_channels)
+        channel_n >= 2 || error("channel_n must be >= 2")
+        visible_channels <= channel_n || error("visible_channels ($visible_channels) must be <= channel_n ($channel_n)")
+        new(channel_n, hidden_n, fire_rate, target_size, target_padding,
+            batch_size, pool_size, train_steps, min_steps, max_steps,
+            lr, lr_decay_step, lr_decay_factor, damage_n, use_pattern_pool,
+            filters, visible_channels)
+    end
+end
+
+Base.@kwdef struct TrajectoryHParams
+    channel_n::Int     = 16
+    hidden_n::Int      = 128
+    # CA steps corresponding to each observation time
+    # e.g. [0, 20, 45, 80] means you have 4 observations
+    obs_steps::Vector{Int} = [0, 20, 45, 80]
+    batch_size::Int    = 4
+    train_steps::Int   = 4000
+    lr::Float32        = 2f-3
+    lr_decay_step::Int = 2000
+    lr_decay_factor::Float32 = 0.1f0
+    target_padding::Int = 0
+    # subset of: :id, :sobel_x, :sobel_y, :avg, :laplacian
+    filters::Vector{Symbol} = [:id, :sobel_x, :sobel_y]
+    # 1 = intensity only, 2 = gray+alpha (life on ch2), 4 = RGBA (life on ch4)
+    visible_channels::Int = 4
 end
 
 function scheduled_learning_rate(

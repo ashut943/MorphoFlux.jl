@@ -35,12 +35,13 @@ Flux.trainable(m::GenomeCAModel) = (;
 )
 
 function GenomeCAModel(hp::GenomeHParams)
-    C = hp.channel_n
-    H = hp.hidden_n
-    K = hp.genome_k
-    W = hp.target_size + 2hp.target_padding
-    target_input_n = W * W * 4
-    theta_n = generated_theta_size(C, H)
+    C   = hp.channel_n
+    H   = hp.hidden_n
+    K   = hp.genome_k
+    n_f = length(hp.filters)
+    W   = hp.target_size + 2hp.target_padding
+    target_input_n = W * W * hp.visible_channels
+    theta_n = generated_theta_size(C, H, n_f)
 
     encoder_w1 = cu(Float32.(randn(hp.encoder_hidden_n, target_input_n) .* sqrt(2f0 / target_input_n)))
     encoder_b1 = CUDA.zeros(Float32, hp.encoder_hidden_n)
@@ -54,7 +55,7 @@ function GenomeCAModel(hp::GenomeHParams)
     # small residuals on top of a fixed base theta — full hyper bias alone tends to blow up
     hyper_w2 = CUDA.zeros(Float32, theta_n, hp.hyper_hidden_n)
     hyper_b2 = CUDA.zeros(Float32, theta_n)
-    base_theta = initial_theta_vector(C, H)
+    base_theta = initial_theta_vector(C, H, n_f)
 
     return GenomeCAModel(
         encoder_w1, encoder_b1,
@@ -65,12 +66,12 @@ function GenomeCAModel(hp::GenomeHParams)
     )
 end
 
-function generated_theta_size(channel_n::Int, hidden_n::Int)
-    return 3channel_n * hidden_n + hidden_n + hidden_n * channel_n + channel_n
+function generated_theta_size(channel_n::Int, hidden_n::Int, n_filters::Int)
+    return n_filters * channel_n * hidden_n + hidden_n + hidden_n * channel_n + channel_n
 end
 
-function initial_theta_vector(channel_n::Int, hidden_n::Int)
-    dense1_w = Float32.(randn(1, 1, 3channel_n, hidden_n) .* sqrt(2f0 / (3channel_n)))
+function initial_theta_vector(channel_n::Int, hidden_n::Int, n_filters::Int)
+    dense1_w = Float32.(randn(1, 1, n_filters * channel_n, hidden_n) .* sqrt(2f0 / (n_filters * channel_n)))
     dense1_b = zeros(Float32, hidden_n)
     dense2_w = zeros(Float32, 1, 1, hidden_n, channel_n)
     dense2_b = zeros(Float32, channel_n)
@@ -135,7 +136,7 @@ function step_generated_nca(
     update_mask = nothing,
 )
     pre_life = NCA.get_living_mask(x)
-    y = NCA.perceive(x, kernel)
+    y = NCA.perceive(x, kernel, model.channel_n)
 
     h = NNlib.conv(y, theta.dense1_w) .+ reshape(theta.dense1_b, 1, 1, :, 1)
     h = relu.(h)
@@ -143,7 +144,7 @@ function step_generated_nca(
     dx = dx .* step_size
 
     mask = update_mask === nothing ?
-        Float32.(CUDA.rand(Float32, size(x, 1), size(x, 2), 1, size(x, 4)) .<= fire_rate) :
+        Float32.(rand(Float32, size(x, 1), size(x, 2), 1, size(x, 4)) .<= fire_rate) :
         Zygote.dropgrad(update_mask)
     x_new = x .+ dx .* mask
 
@@ -152,16 +153,16 @@ function step_generated_nca(
     return x_new .* life
 end
 
-function genome_loss_fn(x::CuArray{Float32,4}, target_batch::CuArray{Float32,4})
-    rgba = x[:, :, 1:4, :]
-    diff = rgba .- target_batch
+function genome_loss_fn(x::CuArray{Float32,4}, target_batch::CuArray{Float32,4}; vc::Int = 4)
+    vis  = x[:, :, 1:vc, :]
+    diff = vis .- target_batch
     return mean(diff .^ 2)
 end
 
-function per_sample_loss_single_target(x::CuArray{Float32,4}, target::CuArray{Float32,3})
+function per_sample_loss_single_target(x::CuArray{Float32,4}, target::CuArray{Float32,3}; vc::Int = 4)
     W, H = size(target, 1), size(target, 2)
-    rgba = x[:, :, 1:4, :]
-    diff = rgba .- reshape(target[:, :, 1:4], W, H, 4, 1)
+    vis  = x[:, :, 1:vc, :]
+    diff = vis .- reshape(target[:, :, 1:vc], W, H, vc, 1)
     per_sample = mean(diff .^ 2; dims=(1, 2, 3))
     return Array(vec(per_sample))
 end

@@ -13,6 +13,13 @@ function make_circle_masks(n::Int, W::Int, H::Int)
 end
 
 function make_update_masks(iter_n::Int, W::Int, H::Int, batch_size::Int, fire_rate::Float32)
-    raw = CUDA.rand(Float32, W, H, 1, batch_size, iter_n)
+    raw = rand(Float32, W, H, 1, batch_size, iter_n)
     return Float32.(raw .<= fire_rate)
+end
+
+function fill_update_masks!(buf::CuArray{Float32,5}, iter_n::Int, fire_rate::Float32)
+    mask_view = @view(buf[:, :, :, :, 1:iter_n])
+    rand!(mask_view)
+    @. mask_view = Float32(mask_view <= fire_rate)
+    return mask_view
 end

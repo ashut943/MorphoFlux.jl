@@ -18,6 +18,10 @@ Base.@kwdef struct GenomeHParams
     kl_beta::Float32         = 1f-4
     damage_n::Int            = 0
     use_pattern_pool::Bool   = true
-    genome_k::Int            = 8    
-    n_targets::Int           = 4 
+    genome_k::Int            = 8
+    n_targets::Int           = 4
+    # subset of: :id, :sobel_x, :sobel_y, :avg, :laplacian
+    filters::Vector{Symbol}  = [:id, :sobel_x, :sobel_y]
+    # 1 = intensity only, 2 = gray+alpha (life on ch2), 4 = RGBA (life on ch4)
+    visible_channels::Int    = 4
 end

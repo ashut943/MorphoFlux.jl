@@ -1,5 +1,5 @@
 using Flux
-using Flux: Adam
+using Flux: Adam, AdamW, ClipNorm, OptimiserChain
 using CUDA, cuDNN, NNlib, Zygote, Random, Statistics, LinearAlgebra
 using JLD2
 using ProgressMeter

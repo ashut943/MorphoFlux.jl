@@ -1,7 +1,7 @@
 module NeuralCellularAutomata
 
 using Flux
-using Flux: Adam
+using Flux: Adam, AdamW, ClipNorm, OptimiserChain
 using CUDA
 using cuDNN
 using NNlib
@@ -34,6 +34,7 @@ include("training.jl")
 include("main.jl")
 
 export HParams, CAModel, train!, main, run_ca, load_model, save_model
-export image_to_nca_target, load_target_rgba, run_timestamp
+export image_to_nca_target, image_to_nca_target_mono2, load_target_rgba, run_timestamp
+export TrajectoryHParams, train_trajectory!, trajectory_loss
 
 end

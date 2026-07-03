@@ -14,6 +14,13 @@ function sample_batch(pool::SamplePool, batch_size::Int)
     return batch, idx
 end
 
+function sample_batch!(dst::CuArray{Float32,4}, pool::SamplePool, idx::AbstractVector{Int})
+    for (k, src_i) in enumerate(idx)
+        dst[:, :, :, k] .= @view(pool.x[:, :, :, src_i])
+    end
+    return nothing
+end
+
 function commit!(pool::SamplePool, batch::CuArray{Float32,4}, idx::Vector{Int})
     pool.x[:, :, :, idx] .= batch
     return nothing

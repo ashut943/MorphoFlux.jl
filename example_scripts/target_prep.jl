@@ -81,7 +81,22 @@ function make_png_target!(out_jld::String, png_path::String; target_size::Int, o
     jldsave(out_jld; target=arr)
 
     preview = joinpath(output_dir, "target_processed.png")
-    NeuralCellularAutomata.save_rgb_png(preview, NeuralCellularAutomata.to_rgb(arr); title="target")
+    NeuralCellularAutomata.save_rgb_png(preview, NeuralCellularAutomata.to_rgb(arr; vc = 4); title = "target")
     @info "png $png_path -> $out_jld"
+    out_jld
+end
+
+"""Grayscale + alpha in channels 1–2 (`image_to_nca_target_mono2`); use with `visible_channels = 2`."""
+function make_png_target_mono2!(out_jld::String, png_path::String; target_size::Int, output_dir::String = "outputs")
+    isfile(png_path) || error("no file at $png_path")
+    mkpath(output_dir)
+    cp(png_path, joinpath(output_dir, "target_source.png"); force=true)
+
+    arr = NeuralCellularAutomata.image_to_nca_target_mono2(load(png_path), target_size, target_size)
+    jldsave(out_jld; target = arr)
+
+    preview = joinpath(output_dir, "target_processed.png")
+    NeuralCellularAutomata.save_rgb_png(preview, NeuralCellularAutomata.to_rgb(arr; vc = 2); title = "target mono2")
+    @info "png (mono2) $png_path -> $out_jld"
     out_jld
 end

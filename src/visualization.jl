@@ -1,18 +1,50 @@
-function to_rgb(x::AbstractArray{Float32})
-    if ndims(x) == 4
-        rgb = x[:, :, 1:3, :]
-        a   = clamp.(x[:, :, 4:4, :], 0f0, 1f0)
-    elseif ndims(x) == 3
-        rgb = x[:, :, 1:3]
-        a   = clamp.(x[:, :, 4:4], 0f0, 1f0)
+function to_rgb(x::AbstractArray{Float32}; vc::Int = 4)
+    if vc == 1
+        # Monochrome: channel 1 is the gray output; no alpha compositing.
+        if ndims(x) == 4
+            g = clamp.(x[:, :, 1:1, :], 0f0, 1f0)
+            return repeat(g, 1, 1, 3, 1)
+        elseif ndims(x) == 3
+            g = clamp.(x[:, :, 1:1], 0f0, 1f0)
+            return repeat(g, 1, 1, 3)
+        else
+            error("Expected 3D or 4D array")
+        end
+    elseif vc == 2
+        # Premultiplied gray (ch1) + alpha (ch2); composite over white like RGBA.
+        if ndims(x) == 4
+            a = clamp.(x[:, :, 2:2, :], 0f0, 1f0)
+            pg = x[:, :, 1:1, :]
+            rgb = repeat(pg, 1, 1, 3, size(x, 4))
+            return 1f0 .- a .+ rgb
+        elseif ndims(x) == 3
+            a = clamp.(x[:, :, 2:2], 0f0, 1f0)
+            pg = x[:, :, 1:1]
+            rgb = repeat(pg, 1, 1, 3)
+            return 1f0 .- a .+ rgb
+        else
+            error("Expected 3D or 4D array")
+        end
     else
-        error("Expected 3D or 4D array")
+        # RGBA: composite premultiplied RGB (ch1–3) over white using channel 4 (alpha).
+        C = size(x, ndims(x) == 4 ? 3 : 3)
+        life_ch = min(4, C)
+        if ndims(x) == 4
+            a   = clamp.(x[:, :, life_ch:life_ch, :], 0f0, 1f0)
+            rgb = x[:, :, 1:3, :]
+        elseif ndims(x) == 3
+            a   = clamp.(x[:, :, life_ch:life_ch], 0f0, 1f0)
+            rgb = x[:, :, 1:3]
+        else
+            error("Expected 3D or 4D array")
+        end
+        return 1f0 .- a .+ rgb
     end
-    return 1f0 .- a .+ rgb
 end
 
 function save_rgb_png(path::String, rgb::AbstractArray{<:Real,3};
                       title::String = "",
+                      subtitle::String = "",
                       fig_size::Tuple{Int,Int} = (420, 420))
     mkpath(dirname(path))
     img = permutedims(clamp.(Float32.(rgb), 0f0, 1f0), (2, 1, 3))
@@ -21,15 +53,28 @@ function save_rgb_png(path::String, rgb::AbstractArray{<:Real,3};
         rgb_mat[y, x] = RGB(Float64(img[y, x, 1]), Float64(img[y, x, 2]), Float64(img[y, x, 3]))
     end
 
-    p = plot(
-        rgb_mat;
-        title,
-        showaxis = false,
-        grid = false,
-        ticks = false,
-        aspect_ratio = 1,
-        size = fig_size,
-    )
+    if isempty(subtitle)
+        p = plot(
+            rgb_mat;
+            title,
+            showaxis = false,
+            grid = false,
+            ticks = false,
+            aspect_ratio = 1,
+            size = fig_size,
+        )
+    else
+        p = plot(
+            rgb_mat;
+            title,
+            subtitle,
+            showaxis = false,
+            grid = false,
+            ticks = false,
+            aspect_ratio = 1,
+            size = fig_size,
+        )
+    end
     savefig(p, path)
     return path
 end
@@ -141,22 +186,19 @@ function save_training_snapshot(
     n_steps::Int,
     fire_rate::Float32 = 1f0,
     scale::Int = 8,
+    vc::Int = 4,
 )
     x = rollout_state(model, seed, kernel, n_steps; fire_rate)
-    snapshot_loss = Float32(loss_fn(x, target))
-    pred_rgb = to_rgb(Array(x)[:, :, :, 1])
-    target_rgb = to_rgb(Array(target))
+    snapshot_loss = Float32(loss_fn(x, target; vc))
+    pred_rgb = to_rgb(Array(x)[:, :, :, 1]; vc)
+    target_rgb = to_rgb(Array(target); vc)
     snapshot = side_by_side_rgb(pred_rgb, target_rgb)
     path = joinpath(snapshot_dir, @sprintf("train_step_%05d.png", step_i))
     save_rgb_png(
         path,
         snapshot;
-        title = @sprintf(
-            "step %05d | train loss %.4g | snapshot loss %.4g",
-            step_i,
-            loss_val,
-            snapshot_loss,
-        ),
+        title = @sprintf("step %05d", step_i),
+        subtitle = @sprintf("train %.5f | snapshot %.5f", loss_val, snapshot_loss),
     )
     @info "Saved training snapshot: $path  train_loss = $(round(loss_val; sigdigits=4))  snapshot_loss = $(round(snapshot_loss; sigdigits=4))"
     return path
@@ -172,6 +214,7 @@ function save_rollout_video(
     fps::Int = 30,
     fire_rate::Float32 = 1f0,
     scale::Int = 8,
+    vc::Int = model.visible_channels,
 )
     rm(frame_dir; force=true, recursive=true)
     mkpath(frame_dir)
@@ -180,7 +223,7 @@ function save_rollout_video(
     progress = Progress(n_steps + 1; desc = "Writing final rollout frames: ")
 
     for i in 0:n_steps
-        rgb = to_rgb(Array(x)[:, :, :, 1])
+        rgb = to_rgb(Array(x)[:, :, :, 1]; vc)
         frame_path = joinpath(frame_dir, @sprintf("frame_%05d.ppm", i))
         write_rgb_ppm(frame_path, rgb; scale)
         next!(progress; showvalues = [(:frame, i), (:total_frames, n_steps + 1)])
@@ -216,7 +259,7 @@ function save_multi_seed_videos(
     for (i, (dx, dy)) in enumerate(seed_offsets)
         cx = clamp(cx0 + dx, 1, W)
         cy = clamp(cy0 + dy, 1, H)
-        seed = make_seed(W, H, channel_n; cx, cy)
+        seed = make_seed(W, H, channel_n; cx, cy, visible_channels = model.visible_channels)
         label = @sprintf("seed_%02d_x%+d_y%+d", i, dx, dy)
         path = save_rollout_video(
             model,

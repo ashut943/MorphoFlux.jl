@@ -32,14 +32,15 @@ function train_genome!(
 
     W, H, _ = size(targets[1])
     target_stack = cat([reshape(targets[m], W, H, 4, 1) for m in 1:M]...; dims=4)
-    seed  = NCA.make_seed(W, H, hp.channel_n)
+    seed  = NCA.make_seed(W, H, hp.channel_n; visible_channels = hp.visible_channels)
     pools = [NCA.SamplePool(seed, hp.pool_size) for _ in 1:M]
 
     model = GenomeCAModel(hp)
-    kernel = NCA.build_perception_kernel(hp.channel_n)
-    opt_state = Flux.setup(Adam(hp.lr), model)
+    kernel = NCA.build_perception_kernel(hp.channel_n; filters = hp.filters)
+    opt_state = Flux.setup(AdamW(hp.lr, (0.9f0, 0.999f0), 1f-4), model)
     per_m     = div(hp.batch_size, M)   # batch items per target
-    target_parts = [repeat(reshape(targets[m], W, H, 4, 1), 1, 1, 1, per_m) for m in 1:M]
+    vc = hp.visible_channels
+    target_parts = [repeat(reshape(targets[m], W, H, vc, 1), 1, 1, 1, per_m) for m in 1:M]
 
     loss_log = Float32[]
     current_lr = hp.lr
@@ -59,7 +60,7 @@ function train_genome!(
         for m in 1:M
             if hp.use_pattern_pool
                 batch_m, idx_m = NCA.sample_batch(pools[m], per_m)
-                losses_m = per_sample_loss_single_target(batch_m, targets[m])
+                losses_m = per_sample_loss_single_target(batch_m, targets[m]; vc = hp.visible_channels)
                 rank_m   = sortperm(losses_m; rev=true)
                 batch_m  = batch_m[:, :, :, rank_m]
                 batch_m[:, :, :, 1] .= seed   # replace worst with fresh seed
@@ -98,9 +99,9 @@ function train_genome!(
                 x
             end
 
-            recon_loss = genome_loss_fn(x_final_parts[1], target_parts[1])
+            recon_loss = genome_loss_fn(x_final_parts[1], target_parts[1]; vc = hp.visible_channels)
             for target_i in 2:M
-                recon_loss = recon_loss + genome_loss_fn(x_final_parts[target_i], target_parts[target_i])
+                recon_loss = recon_loss + genome_loss_fn(x_final_parts[target_i], target_parts[target_i]; vc = hp.visible_channels)
             end
             recon_loss = recon_loss / Float32(M)
             total_loss = recon_loss + hp.kl_beta * kl_loss

@@ -27,12 +27,15 @@ function train!(
     target_padded[p+1:p+hp.target_size, p+1:p+hp.target_size, :] .= target
 
     W, H, _ = size(target_padded)
-    seed = make_seed(W, H, hp.channel_n)
+    seed = make_seed(W, H, hp.channel_n; visible_channels = hp.visible_channels)
     pool = SamplePool(seed, hp.pool_size)
 
     model = CAModel(hp)
-    kernel = build_perception_kernel(hp.channel_n)
-    opt_state = Flux.setup(Adam(hp.lr), model)
+    kernel = build_perception_kernel(hp.channel_n; filters = hp.filters)
+    opt_state = Flux.setup(AdamW(hp.lr, (0.9f0, 0.999f0), 1f-3), model)
+
+    update_mask_buf = CUDA.zeros(Float32, W, H, 1, hp.batch_size, hp.max_steps)
+    batch_buf = CUDA.zeros(Float32, W, H, hp.channel_n, hp.batch_size)
 
     loss_log = Float32[]
     train_start = time()
@@ -48,52 +51,51 @@ function train!(
         Flux.adjust!(opt_state, current_lr)
 
         if hp.use_pattern_pool
-            batch, idx = sample_batch(pool, hp.batch_size)
-            losses = per_sample_loss(batch, target_padded)
+            idx = randperm(pool.size)[1:hp.batch_size]
+            sample_batch!(batch_buf, pool, idx)
+            losses = per_sample_loss(batch_buf, target_padded; vc = hp.visible_channels)
             rank = sortperm(losses; rev=true)
-            batch = batch[:, :, :, rank]
-            batch[:, :, :, 1] .= seed
+            sample_batch!(batch_buf, pool, idx[rank])
+            batch_buf[:, :, :, 1] .= seed
 
             if hp.damage_n > 0
                 dmasks = make_circle_masks(hp.damage_n, W, H)
                 damage = 1f0 .- dmasks
                 n_end = hp.batch_size
                 n_start = n_end - hp.damage_n + 1
-                batch[:, :, :, n_start:n_end] .*= damage
+                batch_buf[:, :, :, n_start:n_end] .*= damage
             end
         else
-            batch = repeat(reshape(seed, W, H, hp.channel_n, 1), 1, 1, 1, hp.batch_size)
+            batch_buf .= reshape(seed, W, H, hp.channel_n, 1)
         end
 
         iter_n = rand(hp.min_steps:hp.max_steps)
-        update_masks = make_update_masks(iter_n, W, H, size(batch, 4), hp.fire_rate)
+        update_masks = fill_update_masks!(update_mask_buf, iter_n, hp.fire_rate)
 
-        @info @sprintf("[train] step %d/%d - forward+backward (Flux/Zygote, %d CA steps)...", step_i, hp.train_steps, iter_n)
-        CUDA.synchronize()
-        fb_start = time()
         (loss_val, x_final), grads = Flux.withgradient(model) do m
-            x = batch
+            x = batch_buf
             for t in 1:iter_n
                 x = step(m, x, kernel; fire_rate = hp.fire_rate, update_mask = @view(update_masks[:, :, :, :, t]))
             end
-            return loss_fn(x, target_padded), x
+            return loss_fn(x, target_padded; vc = hp.visible_channels), x
         end
-        CUDA.synchronize()
-        fb_elapsed = time() - fb_start
-        @info @sprintf("[train] step %d - forward+backward done in %.3f s", step_i, fb_elapsed)
 
         g = grads[1]
         grad_norm = sqrt(sum(Float64(norm(gi))^2 for gi in values(g) if gi !== nothing))
-        g_normed = map(g) do gi
-            gi === nothing && return nothing
-            gi ./ (norm(gi) + 1f-8)
+        for gi in values(g)
+            gi === nothing && continue
+            gi ./= (norm(gi) + 1f-8)
         end
 
-        Flux.update!(opt_state, model, g_normed)
-        CUDA.synchronize()
+        Flux.update!(opt_state, model, g)
 
         if hp.use_pattern_pool
             commit!(pool, x_final, idx[rank])
+        end
+
+        if step_i % 50 == 0
+            GC.gc(false)
+            CUDA.reclaim()
         end
 
         loss_scalar = Float32(loss_val)
@@ -137,6 +139,7 @@ function train!(
                 n_steps = snapshot_rollout_steps,
                 fire_rate = hp.fire_rate,
                 scale = image_scale,
+                vc = hp.visible_channels,
             )
         end
 
@@ -182,5 +185,84 @@ function train!(
         )
     end
 
+    return model, loss_log
+end
+
+function train_trajectory!(
+    hp::TrajectoryHParams,
+    x0::CuArray{Float32,4},             
+    targets::Vector{<:CuArray{Float32,3}},
+    weights::Vector{Float32} = ones(Float32, length(targets));
+    checkpoint_dir::String = "checkpoints",
+    output_dir::String     = "outputs",
+    run_id::String         = run_timestamp(),
+    snapshot_every::Int    = 100,
+)
+    mkpath(checkpoint_dir); mkpath(output_dir)
+    @assert length(targets) == length(hp.obs_steps)
+
+    model  = CAModel(hp)
+    kernel = build_perception_kernel(hp.channel_n; filters = hp.filters)
+    opt_state = Flux.setup(AdamW(hp.lr, (0.9f0, 0.999f0), 1f-3), model)
+
+    K = maximum(hp.obs_steps)    # total steps to roll out each iteration
+    obs_set = Set(hp.obs_steps)  # fast lookup
+
+    loss_log = Float32[]
+    train_start = time()
+
+    progress = Progress(hp.train_steps; desc = "Trajectory fitting: ")
+    for step_i in 1:hp.train_steps
+
+        current_lr = scheduled_learning_rate(
+            step_i, hp.train_steps, hp.lr, hp.lr_decay_step, hp.lr_decay_factor,
+        )
+        Flux.adjust!(opt_state, current_lr)
+
+        (loss_val, _), grads = Flux.withgradient(model) do m
+            x = x0
+            captured = CuArray{Float32,4}[]   # states at obs times
+
+            for t in 1:K
+                # deterministic update: fire_rate=1, no random mask
+                x = step(m, x, kernel; fire_rate = 1f0)
+                if t in obs_set
+                    push!(captured, x)
+                end
+            end
+
+            return trajectory_loss(captured, targets, weights; vc = hp.visible_channels), captured
+        end
+
+        g = grads[1]
+        grad_norm = sqrt(sum(Float64(norm(gi))^2 for gi in values(g) if gi !== nothing))
+        for gi in values(g)
+            gi === nothing && continue
+            gi ./= (norm(gi) + 1f-8)
+        end
+
+        Flux.update!(opt_state, model, g)
+        if step_i % 50 == 0
+            GC.gc(false)
+            CUDA.reclaim()
+        end
+
+        loss_scalar = Float32(loss_val)
+        push!(loss_log, loss_scalar)
+
+        @info @sprintf(
+            "[traj] step %04d/%d | loss %.6e | log10 %.4f | ||g|| %.4e | lr %.2e",
+            step_i, hp.train_steps, loss_scalar, log10(loss_scalar), grad_norm, current_lr,
+        )
+        next!(progress; showvalues = [(:loss, loss_scalar), (:grad_norm, grad_norm)])
+
+        if snapshot_every > 0 && step_i % snapshot_every == 0
+            fn = joinpath(checkpoint_dir, "traj_$(lpad(step_i,5,'0')).jld2")
+            save_model(model, hp, fn)
+        end
+    end
+
+    save_model(model, hp, joinpath(checkpoint_dir, "traj_final.jld2"))
+    save_loss_plots(loss_log, output_dir; run_id)
     return model, loss_log
 end

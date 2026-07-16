@@ -1,4 +1,4 @@
-function save_model(model::CAModel, hp::HParams, path::String)
+function save_model(model::CAModel, hp::Union{HParams, TrajectoryHParams}, path::String)
     JLD2.jldsave(path;
         dense1_w = Array(model.dense1_w),
         dense1_b = Array(model.dense1_b),

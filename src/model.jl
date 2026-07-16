@@ -83,7 +83,7 @@ function CAModel(hp::TrajectoryHParams)
     dense1_b = CUDA.zeros(Float32, H)
     dense2_w = CUDA.zeros(Float32, 1, 1, H, C)
     dense2_b = CUDA.zeros(Float32, C)
-    return CAModel(dense1_w, dense1_b, dense2_w, dense2_b, C, 1f0, hp.visible_channels)
+    return CAModel(dense1_w, dense1_b, dense2_w, dense2_b, C, hp.fire_rate, hp.visible_channels)
 end
 
 function living_mask_kernel!(out, x, W::Int, H::Int, N::Int, life_ch::Int)

@@ -52,3 +52,41 @@ function main(
     @info "done, final loss $(loss_log[end])"
     model, loss_log
 end
+
+function main_trajectory!(
+    x0::CuArray{Float32,4},
+    targets::Vector{<:CuArray{Float32,3}};
+    hp::TrajectoryHParams = TrajectoryHParams(),
+    run_id::String = run_timestamp(),
+    data_dir::String = "data_traj",
+    snapshot_every::Int = 100,
+    video_rollout_steps::Int = 0,
+    video_fps::Int = 30,
+    image_scale::Int = 8,
+    video_fire_rate::Float32 = 1f0,
+)
+    report_backend!()
+    length(targets) == length(hp.obs_steps) ||
+        error("length(targets) ($(length(targets))) must match length(hp.obs_steps) ($(length(hp.obs_steps)))")
+
+    run_dir = joinpath(data_dir, run_id)
+    output_dir = joinpath(run_dir, "outputs")
+    checkpoint_dir = joinpath(run_dir, "checkpoints")
+    mkpath(run_dir)
+
+    model, loss_log = train_trajectory!(
+        hp,
+        x0,
+        targets;
+        checkpoint_dir,
+        output_dir,
+        run_id,
+        snapshot_every,
+        video_rollout_steps,
+        video_fps,
+        image_scale,
+        video_fire_rate,
+    )
+    @info "done, final loss $(loss_log[end])"
+    model, loss_log
+end

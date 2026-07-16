@@ -34,9 +34,11 @@ Base.@kwdef struct HParams
     end
 end
 
+
 Base.@kwdef struct TrajectoryHParams
     channel_n::Int     = 16
     hidden_n::Int      = 128
+    fire_rate::Float32 = 0.5f0
     # CA steps corresponding to each observation time
     # e.g. [0, 20, 45, 80] means you have 4 observations
     obs_steps::Vector{Int} = [0, 20, 45, 80]
@@ -51,7 +53,6 @@ Base.@kwdef struct TrajectoryHParams
     # 1 = intensity only, 2 = gray+alpha (life on ch2), 4 = RGBA (life on ch4)
     visible_channels::Int = 4
 end
-
 function scheduled_learning_rate(
     step_i::Int, train_steps::Int, lr::Float32, lr_decay_step::Int, lr_decay_factor::Float32,
 )

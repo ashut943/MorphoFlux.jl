@@ -120,6 +120,23 @@ function side_by_side_rgb(left::AbstractArray{<:Real,3}, right::AbstractArray{<:
     return img
 end
 
+function stack_rgb_horizontal(images::Vector{<:AbstractArray{<:Real,3}}; gap::Int = 8)
+    isempty(images) && error("need at least one image")
+    W, H, _ = size(images[1])
+    for img in images
+        @assert size(img) == (W, H, 3) "all panels must share dimensions"
+    end
+    n = length(images)
+    total_w = n * W + (n - 1) * gap
+    out = ones(Float32, total_w, H, 3)
+    x_off = 1
+    for img in images
+        out[x_off:x_off + W - 1, :, :] .= Float32.(img)
+        x_off += W + gap
+    end
+    return out
+end
+
 function save_loss_plots(loss_log::AbstractVector{<:Real}, output_dir::String; run_id::String = run_timestamp())
     isempty(loss_log) && return nothing
     mkpath(output_dir)
@@ -174,6 +191,32 @@ function rollout_state(
     return x
 end
 
+"""Roll out from `x0` and return CA states at each entry of `obs_steps` (in order)."""
+function rollout_trajectory_states(
+    model::CAModel,
+    x0::CuArray{Float32,4},
+    kernel::CuArray{Float32,4},
+    obs_steps::Vector{Int};
+    fire_rate::Float32 = model.fire_rate,
+)
+    K = maximum(obs_steps)
+    W, H, N = size(x0, 1), size(x0, 2), size(x0, 4)
+    update_mask_buf = CUDA.zeros(Float32, W, H, 1, N, K)
+    update_masks = fill_update_masks!(update_mask_buf, K, fire_rate)
+
+    x = x0
+    states = Vector{CuArray{Float32,4}}(undef, length(obs_steps))
+    t_prev = 0
+    for (i, t_obs) in enumerate(obs_steps)
+        for t in (t_prev + 1):t_obs
+            x = step(model, x, kernel; fire_rate, update_mask = @view(update_masks[:, :, :, :, t]))
+        end
+        states[i] = x
+        t_prev = t_obs
+    end
+    return states
+end
+
 function save_training_snapshot(
     model::CAModel,
     seed::CuArray{Float32,3},
@@ -202,6 +245,105 @@ function save_training_snapshot(
     )
     @info "Saved training snapshot: $path  train_loss = $(round(loss_val; sigdigits=4))  snapshot_loss = $(round(snapshot_loss; sigdigits=4))"
     return path
+end
+
+function save_trajectory_snapshot(
+    model::CAModel,
+    x0::CuArray{Float32,4},
+    kernel::CuArray{Float32,4},
+    targets::Vector{<:CuArray{Float32,3}},
+    obs_steps::Vector{Int},
+    train_step_i::Int,
+    loss_val::Real,
+    snapshot_dir::String;
+    fire_rate::Float32 = model.fire_rate,
+    vc::Int = model.visible_channels,
+)
+    mkpath(snapshot_dir)
+    states = rollout_trajectory_states(model, x0, kernel, obs_steps; fire_rate)
+
+    panels = Vector{Array{Float32,3}}(undef, length(obs_steps))
+    obs_losses = Float32[]
+    for (i, (x, tgt, t_obs)) in enumerate(zip(states, targets, obs_steps))
+        snap_loss = Float32(loss_fn(x, tgt; vc))
+        push!(obs_losses, snap_loss)
+        pred_rgb = to_rgb(Array(x)[:, :, :, 1]; vc)
+        target_rgb = to_rgb(Array(tgt); vc)
+        panels[i] = side_by_side_rgb(pred_rgb, target_rgb)
+    end
+
+    snapshot = stack_rgb_horizontal(panels)
+    n_obs = length(obs_steps)
+    panel_w, panel_h = size(panels[1], 1), size(panels[1], 2)
+    fig_w = max(420, 120 + panel_w * n_obs ÷ 2)
+    fig_h = max(420, 120 + panel_h)
+
+    obs_summary = join(
+        [@sprintf("t%d %.4f", t, l) for (t, l) in zip(obs_steps, obs_losses)],
+        " | ",
+    )
+    path = joinpath(snapshot_dir, @sprintf("train_step_%05d.png", train_step_i))
+    save_rgb_png(
+        path,
+        snapshot;
+        title = @sprintf(
+            "train %05d | %d obs (pred|true each, left→right: %s)",
+            train_step_i,
+            n_obs,
+            join(string.(obs_steps), ", "),
+        ),
+        subtitle = @sprintf("train_loss %.5f | %s", loss_val, obs_summary),
+        fig_size = (fig_w, fig_h),
+    )
+    @info "Saved trajectory snapshot: $path  obs_losses = $(round.(obs_losses; sigdigits=4))"
+    return path
+end
+
+"""Rollout video; at each `obs_steps` frame index, show pred|target side-by-side."""
+function save_trajectory_rollout_video(
+    model::CAModel,
+    seed::CuArray{Float32,3},
+    kernel::CuArray{Float32,4},
+    obs_steps::Vector{Int},
+    targets::Vector{<:CuArray{Float32,3}};
+    n_steps::Int = maximum(obs_steps),
+    frame_dir::String,
+    out_path::String,
+    fps::Int = 30,
+    fire_rate::Float32 = 1f0,
+    scale::Int = 8,
+    vc::Int = model.visible_channels,
+)
+    length(obs_steps) == length(targets) || error("obs_steps and targets length mismatch")
+    obs_at_step = Dict(t => i for (i, t) in enumerate(obs_steps))
+
+    rm(frame_dir; force=true, recursive=true)
+    mkpath(frame_dir)
+
+    x = reshape(seed, size(seed)..., 1)
+    progress = Progress(n_steps + 1; desc = "Writing trajectory rollout frames: ")
+
+    for i in 0:n_steps
+        pred_rgb = to_rgb(Array(x)[:, :, :, 1]; vc)
+        rgb = if haskey(obs_at_step, i)
+            target_rgb = to_rgb(Array(targets[obs_at_step[i]]); vc)
+            side_by_side_rgb(pred_rgb, target_rgb)
+        else
+            pred_rgb
+        end
+        frame_path = joinpath(frame_dir, @sprintf("frame_%05d.ppm", i))
+        write_rgb_ppm(frame_path, rgb; scale)
+        next!(progress; showvalues = [(:frame, i), (:total_frames, n_steps + 1)])
+
+        if i < n_steps
+            x = step(model, x, kernel; fire_rate)
+        end
+    end
+
+    ffmpeg = FFMPEG_jll.ffmpeg()
+    run(`$ffmpeg -y -framerate $fps -i $(joinpath(frame_dir, "frame_%05d.ppm")) -pix_fmt yuv420p $out_path`)
+    @info "Saved trajectory comparison video: $out_path"
+    return out_path
 end
 
 function save_rollout_video(

@@ -188,6 +188,7 @@ function train!(
     return model, loss_log
 end
 
+
 function train_trajectory!(
     hp::TrajectoryHParams,
     x0::CuArray{Float32,4},             
@@ -197,8 +198,13 @@ function train_trajectory!(
     output_dir::String     = "outputs",
     run_id::String         = run_timestamp(),
     snapshot_every::Int    = 100,
+    video_rollout_steps::Int = 0,
+    video_fps::Int = 30,
+    image_scale::Int = 8,
+    video_fire_rate::Float32 = 1f0,
 )
     mkpath(checkpoint_dir); mkpath(output_dir)
+    snapshot_dir = joinpath(output_dir, "training_snapshots")
     @assert length(targets) == length(hp.obs_steps)
 
     model  = CAModel(hp)
@@ -206,7 +212,10 @@ function train_trajectory!(
     opt_state = Flux.setup(AdamW(hp.lr, (0.9f0, 0.999f0), 1f-3), model)
 
     K = maximum(hp.obs_steps)    # total steps to roll out each iteration
-    obs_set = Set(hp.obs_steps)  # fast lookup
+    rollout_steps = video_rollout_steps > 0 ? video_rollout_steps : 2 * K
+
+    W, H, N = size(x0, 1), size(x0, 2), size(x0, 4)
+    update_mask_buf = CUDA.zeros(Float32, W, H, 1, N, K)
 
     loss_log = Float32[]
     train_start = time()
@@ -219,19 +228,20 @@ function train_trajectory!(
         )
         Flux.adjust!(opt_state, current_lr)
 
-        (loss_val, _), grads = Flux.withgradient(model) do m
+        update_masks = fill_update_masks!(update_mask_buf, K, hp.fire_rate)
+
+        loss_val, grads = Flux.withgradient(model) do m
             x = x0
-            captured = CuArray{Float32,4}[]   # states at obs times
-
-            for t in 1:K
-                # deterministic update: fire_rate=1, no random mask
-                x = step(m, x, kernel; fire_rate = 1f0)
-                if t in obs_set
-                    push!(captured, x)
+            total_loss = 0f0
+            t_prev = 0
+            for (i, t_obs) in enumerate(hp.obs_steps)
+                for t in (t_prev + 1):t_obs
+                    x = step(m, x, kernel; fire_rate = hp.fire_rate, update_mask = @view(update_masks[:, :, :, :, t]))
                 end
+                total_loss += loss_fn(x, targets[i]; vc = hp.visible_channels)
+                t_prev = t_obs
             end
-
-            return trajectory_loss(captured, targets, weights; vc = hp.visible_channels), captured
+            return total_loss / length(hp.obs_steps)
         end
 
         g = grads[1]
@@ -259,10 +269,51 @@ function train_trajectory!(
         if snapshot_every > 0 && step_i % snapshot_every == 0
             fn = joinpath(checkpoint_dir, "traj_$(lpad(step_i,5,'0')).jld2")
             save_model(model, hp, fn)
+            save_trajectory_snapshot(
+                model,
+                x0,
+                kernel,
+                targets,
+                hp.obs_steps,
+                step_i,
+                loss_scalar,
+                snapshot_dir;
+                fire_rate = hp.fire_rate,
+                vc = hp.visible_channels,
+            )
         end
     end
 
     save_model(model, hp, joinpath(checkpoint_dir, "traj_final.jld2"))
     save_loss_plots(loss_log, output_dir; run_id)
+
+    seed = x0[:, :, :, 1]
+    save_rollout_video(
+        model,
+        seed,
+        kernel;
+        n_steps = rollout_steps,
+        frame_dir = joinpath(output_dir, "final_rollout_frames"),
+        out_path = joinpath(output_dir, "final_rollout_2x.mp4"),
+        fps = video_fps,
+        fire_rate = video_fire_rate,
+        scale = image_scale,
+        vc = hp.visible_channels,
+    )
+    save_trajectory_rollout_video(
+        model,
+        seed,
+        kernel,
+        hp.obs_steps,
+        targets;
+        n_steps = K,
+        frame_dir = joinpath(output_dir, "trajectory_comparison_frames"),
+        out_path = joinpath(output_dir, "trajectory_comparison.mp4"),
+        fps = video_fps,
+        fire_rate = video_fire_rate,
+        scale = image_scale,
+        vc = hp.visible_channels,
+    )
+
     return model, loss_log
 end
